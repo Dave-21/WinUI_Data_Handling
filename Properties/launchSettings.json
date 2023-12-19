@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "DataHandling (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "DataHandling (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
