@@ -45,12 +45,23 @@
                 <MenuFlyoutItem Text="About"/>
             </MenuBarItem>
         </MenuBar>
-        
-        <controls:DataGrid x:Name="DataDisplayGrid" Grid.Row="1" AutoGenerateColumns="True">
-            <!-- DataGrid configuration here -->
+
+        <controls:DataGrid x:Name="DataDisplayGrid"
+                           HorizontalScrollBarVisibility="Visible" 
+                           VerticalScrollBarVisibility="Visible" 
+                           Grid.Row="1" 
+                           AutoGenerateColumns="False"
+                           CanUserResizeColumns="False"
+                           AreRowGroupHeadersFrozen="True"
+                           CanDrag="False"
+                           CanUserReorderColumns="False"
+                           CanUserSortColumns="False"
+                           Height="400"
+                           Width="600">
         </controls:DataGrid>
 
-        <oxy:PlotView Grid.Row="1" x:Name="MyPlotView" />
+
+        <!--<oxy:PlotView Grid.Row="1" x:Name="MyPlotView" />-->
 
         <!-- Additional UI elements for visualization here -->
     </Grid>
