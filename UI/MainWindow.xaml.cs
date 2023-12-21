@@ -25,6 +25,7 @@ using System.Diagnostics;
 using System.Timers;
 using CommunityToolkit.WinUI.UI.Controls;
 using Microsoft.UI.Dispatching;
+using WinRT.Interop;
 
 // To learn more about WinUI, the WinUI project structure,
 // and more about our project templates, see: http://aka.ms/winui-project-info.
@@ -158,6 +159,10 @@ namespace DataHandling
             picker.FileTypeFilter.Add(".xlsx");
             picker.FileTypeFilter.Add(".csv");
 
+            // Initialize Picker with the window handle
+            IntPtr hwnd = WindowNative.GetWindowHandle(this);
+            InitializeWithWindow.Initialize(picker, hwnd);
+
             StorageFile file = await picker.PickSingleFileAsync();
             if (file != null)
             {
@@ -165,159 +170,102 @@ namespace DataHandling
             }
         }
 
-        /* Data Handling */
         private async void ReadAndDisplayData(StorageFile file)
         {
-            Stopwatch watch = new Stopwatch();
-            watch.Start();
-            string fileExtension = file.FileType.ToLower();
-            DataTable dataTable = new DataTable();
-
             try
             {
-                // Load data asynchronously based on file type
-                switch (fileExtension)
-                {
-                    case ".xlsx":
-                        dataTable = await ReadExcelFile(file);
-                        break;
-                    case ".csv":
-                        dataTable = await ReadCsvFile(file);
-                        break;
-                }
-
-                if (DataDisplayGrid == null || dataTable == null)
-                {
-                    Debug.WriteLine("Null");
-                    // Log or display an error message
-                    return;
-                }
-
-                // Update UI on the main thread
-                if(dispatcherQueue != null)
-                {
-                    dispatcherQueue.TryEnqueue(() =>
-                    {
-                        DataDisplayGrid.ItemsSource = null;
-                        SetupDataGridColumns(dataTable);
-                        DataDisplayGrid.ItemsSource = dataTable.DefaultView;
-                    });
-                }
+                var dataTable = await LoadDataAsync(file);
+                SetupDataGrid(dataTable);
             }
             catch (Exception ex)
             {
-                // Exception handling: Log or display the error
-                Debug.WriteLine("Error reading file: " + ex.Message);
+                Debug.WriteLine($"Error reading file: {ex.Message}");
             }
-
-            watch.Stop();
-            Debug.WriteLine(watch.ElapsedMilliseconds + " : Display");
         }
 
+        private async Task<DataTable> LoadDataAsync(StorageFile file)
+        {
+            string fileExtension = file.FileType.ToLower();
+            switch (fileExtension)
+            {
+                case ".xlsx":
+                    return await ReadExcelFile(file);
+                case ".csv":
+                    return await ReadCsvFile(file);
+                default:
+                    throw new InvalidOperationException("Unsupported file format");
+            }
+        }
 
         private async Task<DataTable> ReadExcelFile(StorageFile file)
         {
-            DataTable dataTable = new DataTable();
-
-            Stopwatch watch = new Stopwatch();
-            watch.Start();
+            var dataTable = new DataTable();
 
             using (var stream = await file.OpenStreamForReadAsync())
             {
-                using (var workbook = new XLWorkbook(stream))
+                var workbook = new XLWorkbook(stream);
+                var worksheet = workbook.Worksheet(1);
+                var headerRow = worksheet.FirstRowUsed();
+
+                foreach (var headerCell in headerRow.CellsUsed())
                 {
-                    var worksheet = workbook.Worksheet(1);
+                    dataTable.Columns.Add(headerCell.GetValue<string>());
+                }
 
-                    // Read Headers
-                    var headerRow = worksheet.FirstRowUsed();
-                    foreach (var headerCell in headerRow.CellsUsed())
+                foreach (var row in worksheet.RowsUsed().Skip(1))
+                {
+                    var dataRow = dataTable.NewRow();
+                    int columnIndex = 0;
+                    foreach (var cell in row.Cells())
                     {
-                        dataTable.Columns.Add(headerCell.GetValue<string>());
+                        dataRow[columnIndex++] = cell.GetValue<string>();
                     }
-
-                    var rows = worksheet.RowsUsed().Skip(1); // Skip header row
-
-                    // Parallel Processing
-                    var rowTasks = rows.AsParallel().AsOrdered().Select(async row =>
-                    {
-                        object[] rowData = new object[dataTable.Columns.Count];
-                        foreach (var cell in row.Cells())
-                        {
-                            int columnIndex = cell.Address.ColumnNumber - 1;
-                            rowData[columnIndex] = await Task.Run(() => cell.GetValue<string>()); // Asynchronous cell processing
-                        }
-                        return rowData;
-                    }).ToList();
-
-                    // Aggregate and add rows to DataTable
-                    foreach (var rowTask in rowTasks)
-                    {
-                        try
-                        {
-                            var rowData = await rowTask; // Wait for the task to complete
-                            dataTable.Rows.Add(rowData);
-                        }
-                        catch (Exception ex)
-                        {
-                            // Log and handle exceptions related to row processing
-                        }
-                    }
+                    dataTable.Rows.Add(dataRow);
                 }
             }
 
-            watch.Stop();
-
-            Debug.WriteLine(watch.ElapsedMilliseconds + "");
-
             return dataTable;
         }
-
-
 
         private async Task<DataTable> ReadCsvFile(StorageFile file)
         {
-            DataTable dataTable = new DataTable();
-            List<string[]> allRows = new List<string[]>();
-
+            var dataTable = new DataTable();
             using (var stream = await file.OpenStreamForReadAsync())
             using (var reader = new StreamReader(stream))
             {
-                bool isFirstRow = true;
+                string[] headers = reader.ReadLine().Split(',');
+                foreach (var header in headers)
+                {
+                    dataTable.Columns.Add(header);
+                }
+
                 while (!reader.EndOfStream)
                 {
-                    var line = await reader.ReadLineAsync();
-                    var values = line.Split(',');
-
-                    if (isFirstRow)
-                    {
-                        foreach (var header in values)
-                        {
-                            dataTable.Columns.Add(header.Trim());
-                        }
-                        isFirstRow = false;
-                    }
-                    else
-                    {
-                        allRows.Add(values);
-                    }
-                }
-            }
-
-            foreach (var rowValues in allRows)
-            {
-                if (rowValues.Length == dataTable.Columns.Count)
-                {
-                    dataTable.Rows.Add(rowValues);
-                }
-                else
-                {
-                    // Handle error or mismatch in the number of columns
+                    var values = reader.ReadLine().Split(',');
+                    dataTable.Rows.Add(values);
                 }
             }
 
             return dataTable;
         }
 
+        private void SetupDataGrid(DataTable dataTable)
+        {
+            DataDisplayGrid.Columns.Clear();
+
+            for (int i = 0; i < dataTable.Columns.Count; i++)
+            {
+                var column = dataTable.Columns[i];
+                DataDisplayGrid.Columns.Add(new DataGridTextColumn
+                {
+                    Header = column.ColumnName,
+                    // Use the column index for binding
+                    Binding = new Binding { Path = new PropertyPath($"[{i}]") }
+                });
+            }
+
+            DataDisplayGrid.ItemsSource = dataTable.DefaultView;
+        }
 
         private DataTable ConvertWorksheetToDataTable(IXLWorksheet worksheet)
         {
