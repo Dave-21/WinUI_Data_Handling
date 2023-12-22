@@ -16,18 +16,21 @@ using System.Diagnostics;
 using System.Linq;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Dynamic;
 
 namespace DataHandling
 {
     public sealed partial class MainWindow : Window
     {
         public PlotModel MyModel { get; private set; }
+        public ObservableCollection<dynamic> DataGridCollection { get; set; }
 
         public MainWindow()
         {
             InitializeComponent();
             MyModel = new PlotModel { Title = "Sample Chart" };
             SetupPlotModel();
+            DataGridCollection = new ObservableCollection<dynamic>();
         }
 
         private void SetupPlotModel()
@@ -47,6 +50,200 @@ namespace DataHandling
             MyModel.Series.Add(lineSeries);
         }
 
+        private async void LoadExcelFileAsync(string filePath)
+        {
+            Stopwatch watch = new Stopwatch();
+
+            watch.Start();
+            // Clear existing data
+            DataGridCollection.Clear();
+            DataDisplayGrid.Columns.Clear();
+
+            try
+            {
+                // Offloading CPU-bound work to a background thread
+                await Task.Run(() =>
+                {
+                    var dataTable = new DataTable();
+
+                    using var stream = File.OpenRead(filePath);
+                    using var workbook = new XLWorkbook(stream);
+                    var worksheet = workbook.Worksheets.Worksheet(1); // Assuming the first worksheet
+
+                    // Reading header on the background thread
+                    var headerRow = worksheet.FirstRowUsed();
+                    foreach (var headerCell in headerRow.CellsUsed())
+                    {
+                        dataTable.Columns.Add(headerCell.GetValue<string>());
+                    }
+
+                    // Reading rows on the background thread
+                    foreach (var row in worksheet.RowsUsed().Skip(1))
+                    {
+                        var dataRow = dataTable.NewRow();
+                        int columnIndex = 0;
+                        foreach (var cell in row.Cells())
+                        {
+                            dataRow[columnIndex++] = cell.GetValue<string>();
+                        }
+                        dataTable.Rows.Add(dataRow);
+                    }
+
+                    Debug.WriteLine(watch.ElapsedMilliseconds + " : Done Reading");
+
+                    // Switching back to the UI thread to update the UI
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        foreach (DataColumn column in dataTable.Columns)
+                        {
+                            DataDisplayGrid.Columns.Add(new DataGridTextColumn
+                            {
+                                Header = column.ColumnName,
+                                Binding = new Binding { Path = new PropertyPath($"[{column.ColumnName}]") }
+                            });
+                        }
+
+                        DataDisplayGrid.ItemsSource = dataTable.DefaultView;
+                    });
+                });
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error reading file: {ex.Message}");
+                // Handle exceptions
+            }
+            watch.Stop();
+
+            Debug.WriteLine(watch.ElapsedMilliseconds + "");
+        }
+
+
+
+        private void LoadExcelFile(string filePath)
+        {
+            DataGridCollection.Clear(); // Clear existing data
+
+            using (var workbook = new XLWorkbook(filePath))
+            {
+                var worksheet = workbook.Worksheets.Worksheet(1); // Assuming you want the first worksheet
+                var range = worksheet.RangeUsed();
+
+                // Reading Header
+                var headerRow = range.FirstRow();
+                var headers = new string[headerRow.CellCount()];
+                for (int i = 0; i < headerRow.CellCount(); i++)
+                {
+                    headers[i] = headerRow.Cell(i + 1).Value.ToString();
+                }
+
+                // Reading Rows
+                foreach (var row in range.RowsUsed().Skip(1)) // Skip header row
+                {
+                    dynamic expando = new ExpandoObject();
+                    var expandoDict = (IDictionary<string, object>)expando;
+
+                    for (int i = 0; i < row.CellCount(); i++)
+                    {
+                        string header = headers[i];
+                        expandoDict[header] = row.Cell(i + 1).Value;
+                    }
+
+                    DataGridCollection.Add(expando);
+                }
+            }
+
+            // Bind to DataGrid
+            DataDisplayGrid.ItemsSource = DataGridCollection;
+        }
+
+        private async void LoadExcelFileAsync(string filePath)
+        {
+            DataGridCollection.Clear(); // Clear existing data
+            DataDisplayGrid.Columns.Clear();
+
+            try
+            {
+                // Offloading CPU-bound work to a background thread
+                await Task.Run(() =>
+                {
+                    using var workbook = new XLWorkbook(filePath);
+                    var worksheet = workbook.Worksheet(1); // Assuming the first worksheet
+                    var totalRows = worksheet.RangeUsed().RowCount();
+                    int chunkSize = 1000; // Define your chunk size
+
+                    for (int row = 1; row <= totalRows; row += chunkSize)
+                    {
+                        int chunkEnd = Math.Min(row + chunkSize - 1, totalRows);
+                        DataTable chunkDataTable = ReadExcelChunk(worksheet, row, chunkEnd);
+
+                        // Switching back to the UI thread to update the UI
+                        DispatcherQueue.TryEnqueue(() =>
+                        {
+                            UpdateDataGrid(chunkDataTable);
+                        });
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error reading file: {ex.Message}");
+                // Handle exceptions
+            }
+        }
+
+        private DataTable ReadExcelChunk(IXLWorksheet worksheet, int startRow, int endRow)
+        {
+            var dataTable = new DataTable();
+
+            // Read headers
+            if (startRow == 1)
+            {
+                var headerRow = worksheet.Row(1);
+                foreach (var headerCell in headerRow.CellsUsed())
+                {
+                    dataTable.Columns.Add(headerCell.GetValue<string>());
+                }
+                startRow++; // Skip header row for subsequent data
+            }
+
+            // Read data rows
+            for (int rowNum = startRow; rowNum <= endRow; rowNum++)
+            {
+                var row = worksheet.Row(rowNum);
+                var dataRow = dataTable.NewRow();
+                int columnIndex = 0;
+                foreach (var cell in row.CellsUsed())
+                {
+                    dataRow[columnIndex++] = cell.GetValue<string>();
+                }
+                dataTable.Rows.Add(dataRow);
+            }
+
+            return dataTable;
+        }
+
+        private void UpdateDataGrid(DataTable chunkDataTable)
+        {
+            if (DataDisplayGrid.Columns.Count == 0)
+            {
+                foreach (DataColumn column in chunkDataTable.Columns)
+                {
+                    DataDisplayGrid.Columns.Add(new DataGridTextColumn
+                    {
+                        Header = column.ColumnName,
+                        Binding = new Binding { Path = new PropertyPath($"[{column.ColumnName}]") }
+                    });
+                }
+            }
+
+            foreach (DataRow row in chunkDataTable.Rows)
+            {
+                DataGridCollection.Add(row);
+            }
+
+            DataDisplayGrid.ItemsSource = DataGridCollection;
+        }
+
         private async void OpenFile_Click(object sender, RoutedEventArgs e)
         {
             var picker = new FileOpenPicker
@@ -63,7 +260,7 @@ namespace DataHandling
             StorageFile file = await picker.PickSingleFileAsync();
             if (file != null)
             {
-                await ReadAndDisplayData(file);
+                LoadExcelFileAsync(file.Path);
             }
         }
 
